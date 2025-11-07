@@ -1,23 +1,47 @@
-
 from fastapi import FastAPI
 from pydantic import BaseModel
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-import torch
+import joblib
+import mlflow 
+import os
 
-app = FastAPI(title="Ticket Classifier API")
-MODEL_DIR = "models/distilbert-ticket-classifier"
+app = FastAPI(title="Customer Ticket Classifier API", version="1.0")
 
-tok = AutoTokenizer.from_pretrained(MODEL_DIR)
-mdl = AutoModelForSequenceClassification.from_pretrained(MODEL_DIR)
+# Dynamically find the model path
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # path to /api
+MODEL_PATH = os.path.abspath(os.path.join(BASE_DIR, "..", "models", "model (1).pkl"))
 
-class Ticket(BaseModel):
-    text: str
+model = joblib.load(MODEL_PATH)
+
+# Optional: Track logs locally
+mlflow.set_tracking_uri("file:./mlruns")
+
+class TicketInput(BaseModel):
+    message: str
+
+@app.get("/")
+def home():
+    return {"message": "Customer Ticket Classifier API is running 🚀"}
 
 @app.post("/predict")
-def predict(ticket: Ticket):
-    inputs = tok([ticket.text], return_tensors="pt", truncation=True, padding=True)
-    with torch.no_grad():
-        logits = mdl(**inputs).logits
-    idx = int(torch.argmax(logits, dim=-1)[0])
-    label = mdl.config.id2label.get(idx, str(idx))
-    return {"label": label}
+def predict(data: TicketInput):
+    text = data.message
+
+    with mlflow.start_run():
+        mlflow.log_param("input_text", text)
+
+        prediction = model.predict([text])[0]
+        probabilities = model.predict_proba([text])[0]
+        classes = model.classes_
+
+        mlflow.log_param("prediction", prediction)
+
+        for cls, prob in zip(classes, probabilities):
+            mlflow.log_metric(f"confidence_{cls}", round(prob, 3))
+
+        confidence = dict(zip(classes, probabilities.round(3)))
+
+    return {
+        "input": text,
+        "predicted_class" : prediction,
+        "confidence_scores" : confidence
+    }
